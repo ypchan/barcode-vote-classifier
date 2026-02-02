@@ -4,31 +4,25 @@
 """
 barcode-vote: Barcode reads/contigs classifier using minimap2 (PAF) + voting.
 
-Key features
-- Subcommands:
-    1) download   Download barcode_ref.mmi into a default cache directory and VERIFY sha256 (required).
-    2) config     Show/set the reference path in a local config file.
-    3) show-ref   Print the resolved reference path (cli/env/config/cache) and its source.
-    4) classify   Run minimap2 -> filter (identity & coverage) -> vote classification.
+Subcommands
+- download : Download barcode_ref.mmi into cache (or --dir) and VERIFY sha256 (required).
+- config   : Show or set config.ini (reference path).
+- show-ref : Print the resolved reference path (cli/env/config/cache) and its source.
+- classify : Run minimap2 -> filter (identity & coverage) -> vote classification.
 
-- Default reference location (cache):
-    * Prefer: $TMPDIR/barcode-vote-classifier/barcode_ref.mmi  (HPC-friendly)
-    * Fallback: ~/.cache/barcode-vote-classifier/barcode_ref.mmi
+Default cache location
+- Prefer:  $TMPDIR/barcode-vote-classifier/barcode_ref.mmi  (HPC-friendly)
+- Fallback:~/.cache/barcode-vote-classifier/barcode_ref.mmi
 
-- Reference resolution order:
-    1) --ref (classify/show-ref)
-    2) ENV: BARCODE_REF_MMI
-    3) Config: ~/.config/barcode-vote-classifier/config.ini
-    4) Cache: (see above)
-  If missing: instruct to run `barcode-vote download`.
-
-- Strong safety: `download` requires sha256 and verifies it. If mismatch, download fails.
+Reference resolution order
+1) --ref (classify/show-ref)
+2) ENV: BARCODE_REF_MMI
+3) Config: ~/.config/barcode-vote-classifier/config.ini
+4) Cache:  (see above)
 
 USAGE EXAMPLES
-1) Download and configure reference once (recommended):
+1) Download and configure reference once:
     barcode-vote download \
-      --url "https://github.com/<OWNER>/<REPO>/releases/download/v0.1.0/barcode_ref.mmi" \
-      --sha256 "<sha256_hex_64chars>" \
       --write-config
 
 2) Classify reads (FASTQ; gz supported):
@@ -42,21 +36,14 @@ USAGE EXAMPLES
       --save-filtered-hits
 
 3) Classify contigs (FASTA; gz supported):
-    barcode-vote classify \
-      -q contigs.fasta \
-      -o out/contigs \
-      -t 28
+    barcode-vote classify -q contigs.fasta -o out/contigs -t 28
 
-4) Use a shared reference (override default cache):
+4) Use a shared reference (override cache):
     export BARCODE_REF_MMI=/shared/db/barcode_ref.mmi
     barcode-vote classify -q reads.fq.gz -o out/sample
 
-5) Verify which reference will be used:
+5) Check which reference will be used:
     barcode-vote show-ref -v
-
-DEPENDENCIES
-- minimap2 must be available in PATH for `classify`.
-- Python 3.8+.
 """
 
 from __future__ import annotations
@@ -81,8 +68,7 @@ ENV_REF = "BARCODE_REF_MMI"
 ENV_URL = "BARCODE_REF_URL"
 ENV_SHA256 = "BARCODE_REF_SHA256"
 
-# OPTIONAL: hardcode defaults here for a "one-command" download experience.
-# If you fill both, users can run: `barcode-vote download --write-config` with no extra args.
+# Optional: hardcode defaults for one-command download experience.
 DEFAULT_REF_URL = ""
 DEFAULT_REF_SHA256 = ""  # Must be 64 hex chars if set; download enforces sha256.
 
@@ -97,30 +83,25 @@ def _color_enabled() -> bool:
 
 
 class C:
-    """ANSI color codes (kept minimal)."""
+    """ANSI color codes (minimal set)."""
     EN = _color_enabled()
     RESET = "\033[0m" if EN else ""
     BOLD = "\033[1m" if EN else ""
-    DIM = "\033[2m" if EN else ""
     GREEN = "\033[32m" if EN else ""
     CYAN = "\033[36m" if EN else ""
     YELLOW = "\033[33m" if EN else ""
     RED = "\033[31m" if EN else ""
 
 
-def _g(s: str) -> str:
+def _ok(s: str) -> str:
     return f"{C.GREEN}{s}{C.RESET}"
 
 
-def _c(s: str) -> str:
-    return f"{C.CYAN}{s}{C.RESET}"
-
-
-def _y(s: str) -> str:
+def _info(s: str) -> str:
     return f"{C.YELLOW}{s}{C.RESET}"
 
 
-def _r(s: str) -> str:
+def _err(s: str) -> str:
     return f"{C.RED}{s}{C.RESET}"
 
 
@@ -134,7 +115,6 @@ class ColorHelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDes
         if not action.option_strings:
             return super()._format_action_invocation(action)
 
-        # Colorize each option string and metavar
         option_strs = [f"{C.GREEN}{s}{C.RESET}" for s in action.option_strings]
         if action.nargs == 0:
             return ", ".join(option_strs)
@@ -190,7 +170,7 @@ def write_config_ref(path: str) -> None:
     config_dir().mkdir(parents=True, exist_ok=True)
     cfg = config_file()
     cfg.write_text(f"ref_mmi={path}\n")
-    print(f"{_g('[OK]')} Wrote config: {cfg}", file=sys.stderr)
+    print(f"{_ok('[OK]')} Wrote config: {cfg}", file=sys.stderr)
 
 
 def sha256_file(path: Path) -> str:
@@ -201,6 +181,13 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _validate_sha256(s: str) -> str:
+    s = s.strip().lower()
+    if len(s) != 64 or any(ch not in "0123456789abcdef" for ch in s):
+        raise RuntimeError("Invalid sha256. Expect exactly 64 hex characters.")
+    return s
+
+
 def download_file(url: str, dest: Path, expected_sha256: str) -> None:
     """
     Download a file and verify sha256. sha256 mismatch raises RuntimeError and leaves no partial file.
@@ -208,10 +195,9 @@ def download_file(url: str, dest: Path, expected_sha256: str) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
 
-    print(f"{_y('[INFO]')} Downloading: {url}", file=sys.stderr)
-    print(f"{_y('[INFO]')} To: {dest}", file=sys.stderr)
+    print(f"{_info('[INFO]')} Downloading: {url}", file=sys.stderr)
+    print(f"{_info('[INFO]')} To: {dest}", file=sys.stderr)
 
-    # Simple download (no resume). For HPC / shared cache, download once and reuse.
     urllib.request.urlretrieve(url, tmp)
 
     got = sha256_file(tmp)
@@ -254,13 +240,13 @@ def resolve_ref_path(cli_ref: Optional[str], prefer_tmp_cache: bool = True) -> T
     if cached.exists() and cached.stat().st_size > 0:
         return str(cached), "cache"
 
-    raise FileNotFoundError(
+    msg = (
         "Reference .mmi not found.\n"
-        f"Run: {C.GREEN}barcode-vote download --url <...> --sha256 <...> --write-config{C.RESET}\n"
-        f"Or set {C.GREEN}{ENV_REF}{C.RESET}=/path/to/barcode_ref.mmi\n"
-        f"Or pass {C.GREEN}--ref{/C.RESET} to classify/show-ref."
-        .replace("{/C.RESET}", C.RESET)  # avoid f-string brace confusion
+        "Run: barcode-vote download --url <URL> --sha256 <SHA256> --write-config\n"
+        f"Or set ENV {ENV_REF}=/path/to/barcode_ref.mmi\n"
+        "Or pass --ref /path/to/barcode_ref.mmi"
     )
+    raise FileNotFoundError(msg)
 
 
 # -----------------------------
@@ -311,7 +297,7 @@ def cmd_classify(args: argparse.Namespace) -> None:
     require_exe("minimap2")
 
     ref_path, ref_src = resolve_ref_path(args.ref, prefer_tmp_cache=not args.no_tmp_cache)
-    print(f"{_y('[INFO]')} Using ref: {ref_path} (source={ref_src})", file=sys.stderr)
+    print(f"{_info('[INFO]')} Using ref: {ref_path} (source={ref_src})", file=sys.stderr)
 
     q = Path(args.query)
     if not q.exists():
@@ -338,7 +324,7 @@ def cmd_classify(args: argparse.Namespace) -> None:
         cmd.append("--secondary=no")
     cmd += [ref_path, str(q)]
 
-    print(f"{_y('[INFO]')} Running: {' '.join(cmd)}", file=sys.stderr)
+    print(f"{_info('[INFO]')} Running: {' '.join(cmd)}", file=sys.stderr)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
 
@@ -382,7 +368,6 @@ def cmd_classify(args: argparse.Namespace) -> None:
         print(stderr, file=sys.stderr)
         raise RuntimeError(f"minimap2 failed with exit code {rc}")
 
-    # Write final results
     stats = collections.defaultdict(int)
     with open(out_final, "w") as out:
         out.write("read_id\tfinal_category\tvote_score\n")
@@ -393,9 +378,8 @@ def cmd_classify(args: argparse.Namespace) -> None:
             out.write(f"{rid}\t{winner}\t{score}\n")
             stats[winner] += 1
 
-    # Print summary
     print("\n" + "=" * 70, file=sys.stderr)
-    print(f"{_y('[SUMMARY]')} paf_lines={total_paf} kept_hits={kept_hits} unique_ids={len(vote_bins)}", file=sys.stderr)
+    print(f"{_info('[SUMMARY]')} paf_lines={total_paf} kept_hits={kept_hits} unique_ids={len(vote_bins)}", file=sys.stderr)
     print(f"{'Category':<25} | {'Count':<10}", file=sys.stderr)
     print("-" * 45, file=sys.stderr)
     total = 0
@@ -406,19 +390,9 @@ def cmd_classify(args: argparse.Namespace) -> None:
     print(f"{'Total':<25} | {total:<10}", file=sys.stderr)
     print("=" * 70 + "\n", file=sys.stderr)
 
-    print(f"{_g('[OK]')} Final results: {out_final}", file=sys.stderr)
+    print(f"{_ok('[OK]')} Final results: {out_final}", file=sys.stderr)
     if args.save_filtered_hits:
-        print(f"{_g('[OK]')} Filtered hits:  {out_hits}", file=sys.stderr)
-
-
-# -----------------------------
-# download / config / show-ref commands
-# -----------------------------
-def _validate_sha256(s: str) -> str:
-    s = s.strip().lower()
-    if len(s) != 64 or any(ch not in "0123456789abcdef" for ch in s):
-        raise RuntimeError("Invalid sha256. Expect exactly 64 hex characters.")
-    return s
+        print(f"{_ok('[OK]')} Filtered hits:  {out_hits}", file=sys.stderr)
 
 
 def cmd_download(args: argparse.Namespace) -> None:
@@ -428,7 +402,6 @@ def cmd_download(args: argparse.Namespace) -> None:
             "No URL provided. Use --url or set BARCODE_REF_URL, or hardcode DEFAULT_REF_URL in the tool."
         )
 
-    # Strong requirement: sha256 must be provided (from CLI, env, or default constant).
     sha = args.sha256 or os.environ.get(ENV_SHA256) or DEFAULT_REF_SHA256
     if not sha:
         raise RuntimeError(
@@ -441,18 +414,17 @@ def cmd_download(args: argparse.Namespace) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / "barcode_ref.mmi"
 
-    # If already present, verify; mismatch triggers re-download (or fail if download fails).
     if dest.exists() and dest.stat().st_size > 0 and not args.force:
         got = sha256_file(dest)
         if got.lower() == sha:
-            print(f"{_g('[OK]')} Already downloaded and verified: {dest}", file=sys.stderr)
+            print(f"{_ok('[OK]')} Already downloaded and verified: {dest}", file=sys.stderr)
             if args.write_config:
                 write_config_ref(str(dest))
             return
-        print(f"{_y('[WARN]')} Existing file sha256 mismatch; re-downloading.", file=sys.stderr)
+        print(f"{_info('[WARN]')} Existing file sha256 mismatch; re-downloading.", file=sys.stderr)
 
     download_file(url, dest, expected_sha256=sha)
-    print(f"{_g('[OK]')} Downloaded & verified: {dest}", file=sys.stderr)
+    print(f"{_ok('[OK]')} Downloaded & verified: {dest}", file=sys.stderr)
 
     if args.write_config:
         write_config_ref(str(dest))
@@ -484,22 +456,20 @@ def cmd_config(args: argparse.Namespace) -> None:
 # Argument parsing
 # -----------------------------
 def build_parser() -> argparse.ArgumentParser:
-    header = f"""{C.BOLD}barcode-vote{C.RESET}: minimap2 + vote classifier with cached reference
-
-{C.BOLD}Typical workflow{C.RESET}
-  1) Download ref (once) + write config:
-     {C.GREEN}barcode-vote download --url <URL> --sha256 <SHA256> --write-config{C.RESET}
-
-  2) Classify:
-     {C.GREEN}barcode-vote classify -q reads.fq.gz -o out/sample -t 56{C.RESET}
-"""
+    desc = (
+        f"{C.BOLD}barcode-vote{C.RESET}: minimap2 + vote classifier with cached reference\n\n"
+        f"{C.BOLD}Typical workflow{C.RESET}\n"
+        f"  1) Download ref (once) + write config:\n"
+        f"     {C.GREEN}barcode-vote download --url <URL> --sha256 <SHA256> --write-config{C.RESET}\n\n"
+        f"  2) Classify:\n"
+        f"     {C.GREEN}barcode-vote classify -q reads.fq.gz -o out/sample -t 56{C.RESET}\n"
+    )
 
     p = argparse.ArgumentParser(
         prog="barcode-vote",
-        description=header,
+        description=desc,
         formatter_class=ColorHelpFormatter,
     )
-
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # download
@@ -507,19 +477,9 @@ def build_parser() -> argparse.ArgumentParser:
         "download",
         help="Download barcode_ref.mmi into cache (or --dir) and VERIFY sha256 (required).",
         formatter_class=ColorHelpFormatter,
-        description=f"""{C.BOLD}download{C.RESET}: download and verify the reference index
-
-Examples:
-  {C.GREEN}barcode-vote download --url <URL> --sha256 <SHA256> --write-config{C.RESET}
-  {C.GREEN}barcode-vote download --url <URL> --sha256 <SHA256> --dir /shared/db/barcode_ref --write-config{C.RESET}
-
-Notes:
-- sha256 is mandatory. If mismatch, download fails.
-- Default destination is cache dir (TMPDIR preferred).
-""",
     )
-    d.add_argument("--url", default="", help="Download URL for barcode_ref.mmi (or set BARCODE_REF_URL)")
-    d.add_argument("--sha256", default="", help="Expected sha256 for verification (or set BARCODE_REF_SHA256)")
+    d.add_argument("--url", default="https://github.com/ypchan/barcode-vote-classifier/releases/download/v0.1.0/barcode_ref.mmi", help="Download URL for barcode_ref.mmi (or set BARCODE_REF_URL)")
+    d.add_argument("--sha256", default="d97974d1e871875f449423ddf1b40ecab801df1e24c6f7e5f0af52dcc56e0087", help="Expected sha256 for verification (or set BARCODE_REF_SHA256)")
     d.add_argument("--dir", default="", help="Directory to store reference (default: cache dir)")
     d.add_argument("--force", action="store_true", help="Force re-download even if file exists")
     d.add_argument("--write-config", action="store_true", help="Write downloaded path into config.ini")
@@ -531,12 +491,6 @@ Notes:
         "show-ref",
         help="Print resolved reference path and its source (cli/env/config/cache).",
         formatter_class=ColorHelpFormatter,
-        description=f"""{C.BOLD}show-ref{C.RESET}: show which reference will be used
-
-Examples:
-  {C.GREEN}barcode-vote show-ref -v{C.RESET}
-  {C.GREEN}barcode-vote show-ref --ref /path/to/barcode_ref.mmi -v{C.RESET}
-""",
     )
     s.add_argument("--ref", default="", help="Explicit ref path override (highest priority)")
     s.add_argument("--no-tmp-cache", action="store_true", help="Do not use TMPDIR as cache location")
@@ -548,15 +502,6 @@ Examples:
         "config",
         help="Show or set config.ini (reference path).",
         formatter_class=ColorHelpFormatter,
-        description=f"""{C.BOLD}config{C.RESET}: manage local configuration
-
-Examples:
-  {C.GREEN}barcode-vote config{C.RESET}
-  {C.GREEN}barcode-vote config --set-ref /shared/db/barcode_ref.mmi{C.RESET}
-
-Config file path:
-  {config_file()}
-""",
     )
     c.add_argument("--set-ref", default="", help="Set ref_mmi path into config.ini")
     c.set_defaults(func=cmd_config)
@@ -566,18 +511,6 @@ Config file path:
         "classify",
         help="Run minimap2 -> filter (identity+coverage) -> vote classify.",
         formatter_class=ColorHelpFormatter,
-        description=f"""{C.BOLD}classify{C.RESET}: one-shot classification
-
-Examples (reads):
-  {C.GREEN}barcode-vote classify -q reads.fastq.gz -o out/sample -t 56 --sep "|"{C.RESET}
-
-Examples (contigs):
-  {C.GREEN}barcode-vote classify -q contigs.fasta -o out/contigs -t 28{C.RESET}
-
-Outputs:
-  <out_prefix>.final_results.tsv
-  <out_prefix>.filtered_hits.tsv  (if --save-filtered-hits)
-""",
     )
     k.add_argument("-q", "--query", required=True, help="Reads/contigs file (FASTQ/FASTA; .gz supported)")
     k.add_argument("-o", "--out-prefix", required=True, help="Output prefix (writes .final_results.tsv)")
@@ -600,16 +533,16 @@ Outputs:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print(_r("[ERROR] interrupted"), file=sys.stderr)
+        print(_err("[ERROR] interrupted"), file=sys.stderr)
         sys.exit(130)
     except Exception as e:
-        print(_r(f"[ERROR] {e}"), file=sys.stderr)
+        print(_err(f"[ERROR] {e}"), file=sys.stderr)
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
+
