@@ -10,4 +10,4 @@ Classify barcode-related reads/contigs using minimap2 (PAF) + vote logic.
 
 ### Install from GitHub
 ```bash
-pip install git+https://github.com/<you>/barcode-vote-classifier.git
+pip install git+https://github.com/ypchan/barcode-vote-classifier.git
