@@ -4,18 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "barcode-vote-classifier"
-version = "0.1.0"
-description = "Barcode reads/contigs classifier using minimap2 + vote logic."
+version = "0.2.0"
+description = "Barcode reads/contigs classifier with auto-downloadable reference."
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
-authors = [
-  {name = "Your Name"}
-]
 dependencies = []
 
 [project.scripts]
-barcode-vote-classify = "barcode_vote_classifier.cli:main"
+barcode-vote = "barcode_vote_classifier.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
